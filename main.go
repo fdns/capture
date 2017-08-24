@@ -9,106 +9,187 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 	"strconv"
+	"github.com/google/gopacket/tcpassembly/tcpreader"
+	"github.com/google/gopacket/tcpassembly"
+	"io"
+	"encoding/binary"
 )
 
-type DnsMsg struct {
-	Timestamp       string
-	SourceIP        string
-	DestinationIP   string
-	DnsQuery        string
-	DnsAnswer       []string
-	DnsAnswerTTL    []string
-	NumberOfAnswers string
-	DnsResponseCode string
-	DnsOpCode       string
+type tcpPacket struct {
+	packet gopacket.Packet
+	Timestamp time.Time
 }
 
-func parse_dns(dns layers.DNS, SrcIP string, DstIP string) {
-	dnsOpCode := int(dns.OpCode)
-	dnsResponseCode := int(dns.ResponseCode)
-	dnsANCount := int(dns.ANCount)
+type dnsStreamFactory struct{
+	tcp_return_channel chan []byte
+}
 
-	if (dns.QR == false) {
-		for _, dnsQuestion := range dns.Questions {
-			fmt.Println(string(dnsQuestion.Name))
-		}
-	}
+type dnsStream struct {
+	Net, transport gopacket.Flow
+	reader         tcpreader.ReaderStream
+	tcp_return_channel chan []byte
+}
 
-	if (dns.QR == true && dnsANCount == 0 && dnsResponseCode > 0) || (dnsANCount > 0) {
+func (ds *dnsStream) process_stream() {
+	var data[]byte
+	var tmp = make([]byte, 4096)
 
-		fmt.Println("------------------------")
-		fmt.Println("    DNS Record Detected")
+	for {
+		count, err := ds.reader.Read(tmp)
 
-		for _, dnsQuestion := range dns.Questions {
+		if err == io.EOF {
+			// Read until the End Of File, and use it as a signal to send the reassembed stream into the channel
+			// Ensure the length of data is at least two to calculate the dns packet length
+			if len(data) < 2 {
+				return
+			}
 
-			t := time.Now()
-			timestamp := t.Format(time.RFC3339)
+			// Parse the integer
+			dns_data_len := int(binary.BigEndian.Uint16(data[:2]))
 
-			// Add a document to the index
-			d := DnsMsg{Timestamp: timestamp, SourceIP: SrcIP,
-				DestinationIP:   DstIP,
-				DnsQuery:        string(dnsQuestion.Name),
-				DnsOpCode:       strconv.Itoa(dnsOpCode),
-				DnsResponseCode: strconv.Itoa(dnsResponseCode),
-				NumberOfAnswers: strconv.Itoa(dnsANCount)}
-			fmt.Println("    DNS OpCode: ", strconv.Itoa(int(dns.OpCode)))
-			fmt.Println("    DNS ResponseCode: ", dns.ResponseCode.String())
-			fmt.Println("    DNS # Answers: ", strconv.Itoa(dnsANCount))
-			fmt.Println("    DNS Question: ", string(dnsQuestion.Name))
-			fmt.Println("    DNS Endpoints: ", SrcIP, DstIP)
+			// Check the parsed data is the expected size
+			if len(data) < int(dns_data_len + 2) {
+				return
+			}
 
-			if dnsANCount > 0 {
+			// Return the data to be processed
+			ds.tcp_return_channel <- data[2 : dns_data_len+2]
+			return
+		} else if err != nil {
+			fmt.Errorf("Error when reading DNS buf", err)
+		} else if count > 0 {
+			data = append(data, tmp[0:count]...)
 
-				for _, dnsAnswer := range dns.Answers {
-					d.DnsAnswerTTL = append(d.DnsAnswerTTL, fmt.Sprint(dnsAnswer.TTL))
-					if dnsAnswer.IP.String() != "<nil>" {
-						fmt.Println("    DNS Answer: ", dnsAnswer.IP.String())
-						d.DnsAnswer = append(d.DnsAnswer, dnsAnswer.IP.String())
-					}
+			// Check that the size is valid
+			length := len(data)
+			if length > 2 {
+				dns_data_len := int(binary.BigEndian.Uint16(data[:2]))
+				if length > dns_data_len+2 {
+					// Packet corrupted, there is more data from the declared
+					return
 				}
 			}
 		}
 	}
 }
 
-func packet_decoder(channel chan []byte, done chan bool) {
+func (stream *dnsStreamFactory) New(net, transport gopacket.Flow) tcpassembly.Stream {
+	dstream := &dnsStream{
+		Net:       net,
+		transport: transport,
+		reader:    tcpreader.NewReaderStream(),
+		tcp_return_channel: stream.tcp_return_channel,
+	}
+
+	// We must read all the data from the reader or we will have the data standing in memory
+	go dstream.process_stream()
+
+	return &dstream.reader
+}
+
+func tcpAssembler(tcpchannel chan tcpPacket, tcp_return_channel chan []byte, done chan bool) {
+	//TCP reassembly init
+	streamFactory := &dnsStreamFactory{
+		tcp_return_channel: tcp_return_channel,
+	}
+	streamPool := tcpassembly.NewStreamPool(streamFactory)
+	assembler := tcpassembly.NewAssembler(streamPool)
+	ticker := time.Tick(time.Minute)
+	for {
+		select {
+			case packet := <-tcpchannel: {
+				tcp := packet.packet.TransportLayer().(*layers.TCP)
+				assembler.AssembleWithTimestamp(packet.packet.NetworkLayer().NetworkFlow(), tcp, packet.Timestamp)
+			}
+			case <- ticker: {
+				// Every minute, flush connections that haven't seen activity in the past 2 minutes.
+				assembler.FlushOlderThan(time.Now().Add(time.Minute * -2))
+			}
+		}
+	}
+}
+
+func showDNS(dns layers.DNS, SrcIP string, DstIP string, protocol string) {
+	dnsANCount := int(dns.ANCount)
+
+	fmt.Println("------------------------")
+	fmt.Println("    DNS Record Detected")
+	fmt.Println("    Protocol: ", protocol)
+
+	for _, dnsQuestion := range dns.Questions {
+
+		//t := time.Now()
+		//timestamp := t.Format(time.RFC3339)
+		fmt.Println("    DNS QR", string(strconv.FormatBool(dns.QR)))
+		fmt.Println("    DNS OpCode: ", strconv.Itoa(int(dns.OpCode)))
+		fmt.Println("    DNS ResponseCode: ", dns.ResponseCode.String())
+		fmt.Println("    DNS # Answers: ", strconv.Itoa(dnsANCount))
+		fmt.Println("    DNS Question: ", string(dnsQuestion.Name))
+		fmt.Println("    DNS Endpoints: ", SrcIP, DstIP)
+
+		if dnsANCount > 0 {
+
+			for _, dnsAnswer := range dns.Answers {
+				if dnsAnswer.IP.String() != "<nil>" {
+					fmt.Println("    DNS Answer: ", dnsAnswer.IP.String())
+				}
+			}
+		}
+	}
+}
+
+func packetDecoder(channel_input chan gopacket.Packet, tcp_channel chan tcpPacket, tcp_return_channel chan []byte, done chan bool) {
+	var SrcIP string
+	var DstIP string
 	var eth layers.Ethernet
 	var ip4 layers.IPv4
 	var ip6 layers.IPv6
-	var tcp layers.TCP
 	var udp layers.UDP
 	var dns layers.DNS
-	var SrcIP string
-	var DstIP string
-	var netFlow gopacket.Flow
 	var payload gopacket.Payload
-	parser := gopacket.NewDecodingLayerParser(layers.LayerTypeEthernet, &eth, &ip4, &ip6, &tcp, &udp, &dns, &payload)
+	parser := gopacket.NewDecodingLayerParser(layers.LayerTypeEthernet, &eth, &ip4, &ip6, &udp, &dns, &payload)
+	parser_dns_only := gopacket.NewDecodingLayerParser(layers.LayerTypeDNS, &dns, &payload)
 	decodedLayers := []gopacket.LayerType{}
 	for {
 
 		select {
-			case packet := <-channel:
+			case data := <-tcp_return_channel:
 				{
-					err := parser.DecodeLayers(packet, &decodedLayers)
-					for _, typ := range decodedLayers {
-						switch typ {
-						case layers.LayerTypeIPv4:
-							SrcIP = ip4.SrcIP.String()
-							DstIP = ip4.DstIP.String()
-							netFlow = ip4.NetworkFlow()
-						case layers.LayerTypeIPv6:
-							SrcIP = ip6.SrcIP.String()
-							DstIP = ip6.DstIP.String()
-							netFlow = ip6.NetworkFlow()
-						case layers.LayerTypeTCP:
-							break
-						case layers.LayerTypeDNS:
-							parse_dns(dns, SrcIP, DstIP)
+					parser_dns_only.DecodeLayers(data, &decodedLayers)
+					for _, value := range decodedLayers {
+						if value == layers.LayerTypeDNS {
+							showDNS(dns, "", "", "tcp")
 						}
 					}
+				}
+			case packet := <-channel_input:
+				{
+					switch packet.NetworkLayer().LayerType() {
+					case layers.LayerTypeIPv4:
+						ip4 := packet.NetworkLayer().(*layers.IPv4)
+						SrcIP = ip4.SrcIP.String()
+						DstIP = ip4.DstIP.String()
+					case layers.LayerTypeIPv6:
+						ip6 := packet.NetworkLayer().(*layers.IPv6)
+						SrcIP = ip6.SrcIP.String()
+						DstIP = ip6.DstIP.String()
+					default:
+						break
+					}
 
-					if err != nil {
-						fmt.Println("  Error encountered:", err)
+					switch packet.TransportLayer().LayerType() {
+					case layers.LayerTypeUDP:
+						parser.DecodeLayers(packet.Data(), &decodedLayers)
+						for _, value := range decodedLayers {
+							if value == layers.LayerTypeDNS {
+								showDNS(dns, SrcIP, DstIP, "udp")
+							}
+						}
+					case layers.LayerTypeTCP:
+						tcp_channel <- tcpPacket{
+							packet,
+							time.Now(),
+						}
 					}
 				}
 			case _ = <-done:
@@ -125,7 +206,7 @@ func initialize(devName string) *pcap.Handle {
 	}
 
 	// Set filter
-	var filter string = "udp and port 53"
+	var filter string = "port 53"
 	fmt.Println()
 	fmt.Println("Using Device: ", devName)
 	fmt.Println("Filter: ", filter)
@@ -168,22 +249,21 @@ func main() {
 	handle := initialize(devName)
 	defer handle.Close()
 
-	proc_channel := make(chan []byte, 500)
+	tcp_channel := make(chan tcpPacket, 500)
+	tcp_return_channel := make(chan []byte, 500)
+	processing_channel := make(chan gopacket.Packet, 500)
 	done_channel := make(chan bool)
-	go packet_decoder(proc_channel, done_channel)
+	// TODO: Launch more packet decoders
+	go packetDecoder(processing_channel, tcp_channel, tcp_return_channel, done_channel)
+	go tcpAssembler(tcp_channel, tcp_return_channel, done_channel)
 
-	count := 0
-	for {
-		data, _, err := handle.ReadPacketData()
-		count++
-		if err != nil {
-			fmt.Println("Error reading packet data: ", err)
-			continue
+	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
+	packetSource.DecodeOptions.Lazy = true
+	for packet := range packetSource.Packets() {
+		if packet == nil {
+			fmt.Println("PacketSource returned nil.")
+			break
 		}
-		proc_channel <- data
-		if count % 1000 == 0 {
-			fmt.Print("Count ")
-			fmt.Println(count)
-		}
+		processing_channel <- packet
 	}
 }
