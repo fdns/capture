@@ -18,7 +18,7 @@ func connectClickhouse(exiting chan bool) *sql.DB {
 	tick := time.Tick(5 * time.Second)
 	for {
 		select {
-		case <- exiting:
+		case <-exiting:
 			// When exiting, return inmediatly
 			return nil
 		case <-tick:
@@ -72,46 +72,51 @@ func output(resultChannel chan DnsResult, exiting chan bool, wg *sync.WaitGroup)
 			batch.PushBack(data)
 		case <-ticker:
 			if batch.Len() > 0 {
-				PROCESS:
-					for {
-						// Return if the connection is null, we are exiting
-						if connect == nil {
-							break
-						}
-						tx, err := connect.Begin()
-						if err != nil {
-							log.Println(err)
-							connect = connectClickhouse(exiting)
-							continue
-						}
-						stmt, err := tx.Prepare("INSERT INTO DNS_LOG (DnsDate, timestamp, Protocol, QR, OpCode, ResponceCode, Question) VALUES(?,?,?,?,?,?,?)")
-						if err != nil {
-							log.Println(err)
-							connect = connectClickhouse(exiting)
-							continue
-						}
-						fmt.Println(batch.Len())
-						for iter := batch.Front(); iter != nil; iter = iter.Next() {
-							item := iter.Value.(DnsResult)
-							for _, dnsQuestion := range item.dns.Questions {
-								if _, err := stmt.Exec(item.timestamp, item.timestamp, item.protocol, item.dns.QR, int(item.dns.ResponseCode), int(item.dns.ResponseCode), string(dnsQuestion.Name)); err != nil {
-									if err != nil {
-										log.Println(err)
-										connect = connectClickhouse(exiting)
-										continue PROCESS
-									}
+			PROCESS:
+				for {
+					// Return if the connection is null, we are exiting
+					if connect == nil {
+						break
+					}
+					tx, err := connect.Begin()
+					if err != nil {
+						log.Println(err)
+						connect = connectClickhouse(exiting)
+						continue
+					}
+					stmt, err := tx.Prepare("INSERT INTO DNS_LOG (DnsDate, timestamp, Protocol, QR, OpCode, ResponceCode, Question) VALUES(?,?,?,?,?,?,?)")
+					if err != nil {
+						log.Println(err)
+						connect = connectClickhouse(exiting)
+						continue
+					}
+					fmt.Println(batch.Len())
+					for iter := batch.Front(); iter != nil; iter = iter.Next() {
+						item := iter.Value.(DnsResult)
+						for _, dnsQuestion := range item.dns.Questions {
+							if _, err := stmt.Exec(item.timestamp,
+								item.timestamp,
+								item.protocol, item.dns.QR,
+								int(item.dns.ResponseCode),
+								int(item.dns.ResponseCode),
+								string(dnsQuestion.Name)); err != nil {
+								if err != nil {
+									log.Println(err)
+									connect = connectClickhouse(exiting)
+									continue PROCESS
 								}
 							}
 						}
-						err = tx.Commit()
-						if err != nil {
-							log.Println(err)
-							connect = connectClickhouse(exiting)
-							continue
-						}
-						batch.Init()
-						break
 					}
+					err = tx.Commit()
+					if err != nil {
+						log.Println(err)
+						connect = connectClickhouse(exiting)
+						continue
+					}
+					batch.Init()
+					break
+				}
 			}
 		case <-exiting:
 			return

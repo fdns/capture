@@ -19,10 +19,10 @@ import (
 type DnsHandler func(dns layers.DNS, SrcIP string, DstIP string, protocol string)
 type DnsResult struct {
 	timestamp time.Time
-	dns layers.DNS
-	SrcIP string
-	DstIP string
-	protocol string
+	dns       layers.DNS
+	SrcIP     string
+	DstIP     string
+	protocol  string
 }
 
 type tcpPacket struct {
@@ -168,7 +168,7 @@ func packetDecoder(channel_input chan gopacket.Packet, tcp_channel chan tcpPacke
 					parser.DecodeLayers(packet.Data(), &decodedLayers)
 					for _, value := range decodedLayers {
 						if value == layers.LayerTypeDNS {
-							resultChannel <- DnsResult{time.Now(),dns, SrcIP, DstIP, "udp"}
+							resultChannel <- DnsResult{time.Now(), dns, SrcIP, DstIP, "udp"}
 						}
 					}
 				case layers.LayerTypeTCP:
@@ -219,7 +219,6 @@ func start(devName string, resultChannel chan DnsResult, exiting chan bool) {
 	handle := initialize(devName)
 	defer handle.Close()
 
-
 	tcp_channel := make(chan tcpPacket, 500)
 	tcp_return_channel := make(chan tcpData, 500)
 	processing_channel := make(chan gopacket.Packet, 10000)
@@ -242,9 +241,9 @@ func start(devName string, resultChannel chan DnsResult, exiting chan bool) {
 				continue
 			}
 			select {
-				case processing_channel <- packet:
+			case processing_channel <- packet:
 			}
-		case <- exiting:
+		case <-exiting:
 			return
 		}
 	}
