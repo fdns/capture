@@ -138,7 +138,6 @@ func packetDecoder(channel_input chan gopacket.Packet, tcp_channel chan tcpPacke
 	parser_dns_only := gopacket.NewDecodingLayerParser(layers.LayerTypeDNS, &dns, &payload)
 	decodedLayers := []gopacket.LayerType{}
 	for {
-
 		select {
 		case data := <-tcp_return_channel:
 			{
@@ -223,7 +222,7 @@ func start(devName string, resultChannel chan DnsResult, exiting chan bool) {
 
 	tcp_channel := make(chan tcpPacket, 500)
 	tcp_return_channel := make(chan tcpData, 500)
-	processing_channel := make(chan gopacket.Packet, 1000)
+	processing_channel := make(chan gopacket.Packet, 10000)
 
 	// Setup SIGINT handling
 	handleInterrupt(exiting)
@@ -242,8 +241,10 @@ func start(devName string, resultChannel chan DnsResult, exiting chan bool) {
 				close(exiting)
 				continue
 			}
-			processing_channel <- packet
-		case _ = <- exiting:
+			select {
+				case processing_channel <- packet:
+			}
+		case <- exiting:
 			return
 		}
 	}
