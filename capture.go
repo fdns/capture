@@ -17,6 +17,13 @@ import (
 )
 
 type DnsHandler func(dns layers.DNS, SrcIP string, DstIP string, protocol string)
+type DnsResult struct {
+	timestamp time.Time
+	dns layers.DNS
+	SrcIP string
+	DstIP string
+	protocol string
+}
 
 type tcpPacket struct {
 	packet    gopacket.Packet
@@ -118,7 +125,7 @@ func tcpAssembler(tcpchannel chan tcpPacket, tcp_return_channel chan tcpData, do
 	}
 }
 
-func packetDecoder(channel_input chan gopacket.Packet, tcp_channel chan tcpPacket, tcp_return_channel chan tcpData, done chan bool, dns_function DnsHandler) {
+func packetDecoder(channel_input chan gopacket.Packet, tcp_channel chan tcpPacket, tcp_return_channel chan tcpData, done chan bool, resultChannel chan DnsResult) {
 	var SrcIP string
 	var DstIP string
 	var eth layers.Ethernet
@@ -138,7 +145,7 @@ func packetDecoder(channel_input chan gopacket.Packet, tcp_channel chan tcpPacke
 				parser_dns_only.DecodeLayers(data.data, &decodedLayers)
 				for _, value := range decodedLayers {
 					if value == layers.LayerTypeDNS {
-						dns_function(dns, data.SrcIp, data.DstIp, "tcp")
+						resultChannel <- DnsResult{time.Now(), dns, data.SrcIp, data.DstIp, "tcp"}
 					}
 				}
 			}
@@ -162,7 +169,7 @@ func packetDecoder(channel_input chan gopacket.Packet, tcp_channel chan tcpPacke
 					parser.DecodeLayers(packet.Data(), &decodedLayers)
 					for _, value := range decodedLayers {
 						if value == layers.LayerTypeDNS {
-							showDNS(dns, SrcIP, DstIP, "udp")
+							resultChannel <- DnsResult{time.Now(),dns, SrcIP, DstIP, "udp"}
 						}
 					}
 				case layers.LayerTypeTCP:
@@ -209,21 +216,21 @@ func handleInterrupt(done chan bool) {
 	}()
 }
 
-func start(devName string, dns_function DnsHandler) {
+func start(devName string, resultChannel chan DnsResult, exiting chan bool) {
 	handle := initialize(devName)
 	defer handle.Close()
+
 
 	tcp_channel := make(chan tcpPacket, 500)
 	tcp_return_channel := make(chan tcpData, 500)
 	processing_channel := make(chan gopacket.Packet, 1000)
-	done_channel := make(chan bool)
 
 	// Setup SIGINT handling
-	handleInterrupt(done_channel)
+	handleInterrupt(exiting)
 
 	// TODO: Launch more packet decoders
-	go packetDecoder(processing_channel, tcp_channel, tcp_return_channel, done_channel, dns_function)
-	go tcpAssembler(tcp_channel, tcp_return_channel, done_channel)
+	go packetDecoder(processing_channel, tcp_channel, tcp_return_channel, exiting, resultChannel)
+	go tcpAssembler(tcp_channel, tcp_return_channel, exiting)
 
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	packetSource.DecodeOptions.Lazy = true
@@ -232,11 +239,11 @@ func start(devName string, dns_function DnsHandler) {
 		case packet := <-packetSource.Packets():
 			if packet == nil {
 				fmt.Println("PacketSource returned nil.")
-				close(done_channel)
+				close(exiting)
 				continue
 			}
 			processing_channel <- packet
-		case _ = <-done_channel:
+		case _ = <- exiting:
 			return
 		}
 	}
