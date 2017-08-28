@@ -215,7 +215,7 @@ func start(devName string, dns_function DnsHandler) {
 
 	tcp_channel := make(chan tcpPacket, 500)
 	tcp_return_channel := make(chan tcpData, 500)
-	processing_channel := make(chan gopacket.Packet, 500)
+	processing_channel := make(chan gopacket.Packet, 1000)
 	done_channel := make(chan bool)
 
 	// Setup SIGINT handling
