@@ -216,7 +216,7 @@ func handleInterrupt(done chan bool) {
 	}()
 }
 
-func start(devName string, resultChannel chan DnsResult, exiting chan bool) {
+func start(devName string, resultChannel chan DnsResult, packetHandlerCount, tcpHandlerCount uint, exiting chan bool) {
 	var tcp_channel []chan tcpPacket
 	handle := initialize(devName)
 	defer handle.Close()
@@ -227,13 +227,14 @@ func start(devName string, resultChannel chan DnsResult, exiting chan bool) {
 	// Setup SIGINT handling
 	handleInterrupt(exiting)
 
-	for i := 0; i < 10; i++ {
+	for i := uint(0); i < tcpHandlerCount; i++ {
 		tcp_channel = append(tcp_channel, make(chan tcpPacket, 500))
 		go tcpAssembler(tcp_channel[i], tcp_return_channel, exiting)
 	}
 
-	// TODO: Launch more packet decoders
-	go packetDecoder(processing_channel, tcp_channel, tcp_return_channel, exiting, resultChannel)
+	for i := uint(0); i < packetHandlerCount; i++ {
+		go packetDecoder(processing_channel, tcp_channel, tcp_return_channel, exiting, resultChannel)
+	}
 
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	packetSource.DecodeOptions.Lazy = true

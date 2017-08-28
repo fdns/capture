@@ -13,15 +13,18 @@ import (
 )
 
 var devName = flag.String("devName", "", "Device used to capture")
+var packetHandlerCount = flag.Uint("packetHandlers", 1, "Number of routines used to handle received packets")
+var tcpHandlerCount = flag.Uint("tcpHandlers", 1, "Number of routines used to handle tcp assembly")
 
 func connectClickhouse(exiting chan bool) *sql.DB {
-	tick := time.Tick(5 * time.Second)
+	tick := time.NewTimer(5 * time.Second)
+	defer tick.Stop()
 	for {
 		select {
 		case <-exiting:
 			// When exiting, return inmediatly
 			return nil
-		case <-tick:
+		case <-tick.C:
 			connection, err := sql.Open("clickhouse", "tcp://172.30.65.172:9000?username=&compress=true&debug=false")
 			if err != nil {
 				log.Println(err)
@@ -137,7 +140,7 @@ func main() {
 	go output(resultChannel, exiting, &wg)
 
 	// Start listening
-	start(*devName, resultChannel, exiting)
+	start(*devName, resultChannel, *packetHandlerCount, *tcpHandlerCount, exiting)
 
 	// Wait for the output to finish
 	fmt.Println("Exiting")
