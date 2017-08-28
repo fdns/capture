@@ -125,7 +125,7 @@ func tcpAssembler(tcpchannel chan tcpPacket, tcp_return_channel chan tcpData, do
 	}
 }
 
-func packetDecoder(channel_input chan gopacket.Packet, tcp_channel chan tcpPacket, tcp_return_channel chan tcpData, done chan bool, resultChannel chan DnsResult) {
+func packetDecoder(channel_input chan gopacket.Packet, tcp_channel []chan tcpPacket, tcp_return_channel chan tcpData, done chan bool, resultChannel chan DnsResult) {
 	var SrcIP string
 	var DstIP string
 	var eth layers.Ethernet
@@ -137,6 +137,7 @@ func packetDecoder(channel_input chan gopacket.Packet, tcp_channel chan tcpPacke
 	parser := gopacket.NewDecodingLayerParser(layers.LayerTypeEthernet, &eth, &ip4, &ip6, &udp, &dns, &payload)
 	parser_dns_only := gopacket.NewDecodingLayerParser(layers.LayerTypeDNS, &dns, &payload)
 	decodedLayers := []gopacket.LayerType{}
+	tcp_count := uint64(len(tcp_channel))
 	for {
 		select {
 		case data := <-tcp_return_channel:
@@ -172,7 +173,7 @@ func packetDecoder(channel_input chan gopacket.Packet, tcp_channel chan tcpPacke
 						}
 					}
 				case layers.LayerTypeTCP:
-					tcp_channel <- tcpPacket{
+					tcp_channel[packet.NetworkLayer().NetworkFlow().FastHash()%tcp_count] <- tcpPacket{
 						packet,
 						time.Now(),
 					}
@@ -216,19 +217,23 @@ func handleInterrupt(done chan bool) {
 }
 
 func start(devName string, resultChannel chan DnsResult, exiting chan bool) {
+	var tcp_channel []chan tcpPacket
 	handle := initialize(devName)
 	defer handle.Close()
 
-	tcp_channel := make(chan tcpPacket, 500)
 	tcp_return_channel := make(chan tcpData, 500)
 	processing_channel := make(chan gopacket.Packet, 10000)
 
 	// Setup SIGINT handling
 	handleInterrupt(exiting)
 
+	for i := 0; i < 10; i++ {
+		tcp_channel = append(tcp_channel, make(chan tcpPacket, 500))
+		go tcpAssembler(tcp_channel[i], tcp_return_channel, exiting)
+	}
+
 	// TODO: Launch more packet decoders
 	go packetDecoder(processing_channel, tcp_channel, tcp_return_channel, exiting, resultChannel)
-	go tcpAssembler(tcp_channel, tcp_return_channel, exiting)
 
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	packetSource.DecodeOptions.Lazy = true
