@@ -125,7 +125,7 @@ func tcpAssembler(tcpchannel chan tcpPacket, tcp_return_channel chan tcpData, do
 	}
 }
 
-func packetDecoder(channel_input chan gopacket.Packet, tcp_channel []chan tcpPacket, tcp_return_channel chan tcpData, done chan bool, resultChannel chan DnsResult) {
+func packetDecoder(channel_input chan gopacket.Packet, tcp_channel []chan tcpPacket, tcp_return_channel <-chan tcpData, done chan bool, resultChannel chan<- DnsResult) {
 	var SrcIP string
 	var DstIP string
 	var eth layers.Ethernet
@@ -216,7 +216,7 @@ func handleInterrupt(done chan bool) {
 	}()
 }
 
-func start(devName string, resultChannel chan DnsResult, packetHandlerCount, tcpHandlerCount uint, exiting chan bool) {
+func start(devName string, resultChannel chan<- DnsResult, packetHandlerCount, tcpHandlerCount uint, exiting chan bool) {
 	var tcp_channel []chan tcpPacket
 	handle := initialize(devName)
 	defer handle.Close()
