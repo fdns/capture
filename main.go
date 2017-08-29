@@ -8,13 +8,18 @@ import (
 	"log"
 	"sync"
 	"time"
+	"runtime/pprof"
 
 	_ "github.com/kshvakov/clickhouse"
+	"os"
+	"runtime"
 )
 
 var devName = flag.String("devName", "", "Device used to capture")
-var packetHandlerCount = flag.Uint("packetHandlers", 1, "Number of routines used to handle received packets")
+var packetHandlerCount = flag.Uint("packetHandlers", 2, "Number of routines used to handle received packets")
 var tcpHandlerCount = flag.Uint("tcpHandlers", 1, "Number of routines used to handle tcp assembly")
+var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
+var memprofile = flag.String("memprofile", "", "write memory profile to `file`")
 
 func connectClickhouse(exiting chan bool) *sql.DB {
 	tick := time.NewTimer(5 * time.Second)
@@ -30,8 +35,6 @@ func connectClickhouse(exiting chan bool) *sql.DB {
 				log.Println(err)
 				continue
 			}
-			// SELECT t, groupArray((Question, c)) as groupArr FROM (SELECT (intDiv(toUInt32(toStartOfMinute(timestamp)), 10) * 10) * 1000 as t, Question, count(*) as c FROM $table WHERE $timeFilter GROUP BY t, Question ORDER BY t limit 5 by t ) GROUP BY t order by t
-			// CREATE MATERIALIZED VIEW grouped_query ENGINE=SummingMergeTree(DnsDate, (t, Question), 8192, c) AS SELECT DnsDate, toStartOfMinute(timestamp) as t, Question, count(*) as c FROM DNS_LOG GROUP BY t, Question
 			_, err = connection.Exec(`
 			CREATE TABLE IF NOT EXISTS DNS_LOG (
 				DnsDate Date,
@@ -40,7 +43,8 @@ func connectClickhouse(exiting chan bool) *sql.DB {
 				QR UInt8,
 				OpCode UInt8,
 				ResponceCode UInt8,
-				Question String
+				Question String,
+				Size UInt16
 			) engine=MergeTree(DnsDate, (timestamp, Question, Protocol), 8192)
 			`)
 			if err != nil {
@@ -87,7 +91,7 @@ func output(resultChannel chan DnsResult, exiting chan bool, wg *sync.WaitGroup)
 						connect = connectClickhouse(exiting)
 						continue
 					}
-					stmt, err := tx.Prepare("INSERT INTO DNS_LOG (DnsDate, timestamp, Protocol, QR, OpCode, ResponceCode, Question) VALUES(?,?,?,?,?,?,?)")
+					stmt, err := tx.Prepare("INSERT INTO DNS_LOG (DnsDate, timestamp, Protocol, QR, OpCode, ResponceCode, Question, Size) VALUES(?,?,?,?,?,?,?,?)")
 					if err != nil {
 						log.Println(err)
 						connect = connectClickhouse(exiting)
@@ -96,13 +100,14 @@ func output(resultChannel chan DnsResult, exiting chan bool, wg *sync.WaitGroup)
 					fmt.Println(batch.Len())
 					for iter := batch.Front(); iter != nil; iter = iter.Next() {
 						item := iter.Value.(DnsResult)
-						for _, dnsQuestion := range item.dns.Questions {
+						for _, dnsQuestion := range item.Dns.Questions {
 							if _, err := stmt.Exec(item.timestamp,
 								item.timestamp,
-								item.protocol, item.dns.QR,
-								int(item.dns.ResponseCode),
-								int(item.dns.ResponseCode),
-								string(dnsQuestion.Name)); err != nil {
+								item.Protocol, item.Dns.QR,
+								int(item.Dns.ResponseCode),
+								int(item.Dns.ResponseCode),
+								string(dnsQuestion.Name),
+								item.PacketLength); err != nil {
 								if err != nil {
 									log.Println(err)
 									connect = connectClickhouse(exiting)
@@ -129,6 +134,18 @@ func output(resultChannel chan DnsResult, exiting chan bool, wg *sync.WaitGroup)
 
 func main() {
 	flag.Parse()
+	if *cpuprofile != "" {
+		f, err := os.Create(*cpuprofile)
+		if err != nil {
+			log.Fatal("could not create CPU profile: ", err)
+		}
+		if err := pprof.StartCPUProfile(f); err != nil {
+			log.Fatal("could not start CPU profile: ", err)
+		}
+		defer pprof.StopCPUProfile()
+	}
+
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	if *devName == "" {
 		log.Fatal("-devName is required")
 	}
@@ -141,6 +158,19 @@ func main() {
 
 	// Start listening
 	start(*devName, resultChannel, *packetHandlerCount, *tcpHandlerCount, exiting)
+
+
+	if *memprofile != "" {
+		f, err := os.Create(*memprofile)
+		if err != nil {
+			log.Fatal("could not create memory profile: ", err)
+		}
+		runtime.GC() // get up-to-date statistics
+		if err := pprof.WriteHeapProfile(f); err != nil {
+			log.Fatal("could not write memory profile: ", err)
+		}
+		f.Close()
+	}
 
 	// Wait for the output to finish
 	fmt.Println("Exiting")

@@ -18,11 +18,12 @@ import (
 
 type DnsHandler func(dns layers.DNS, SrcIP string, DstIP string, protocol string)
 type DnsResult struct {
-	timestamp time.Time
-	dns       layers.DNS
-	SrcIP     string
-	DstIP     string
-	protocol  string
+	timestamp    time.Time
+	Dns          layers.DNS
+	SrcIP        string
+	DstIP        string
+	Protocol     string
+	PacketLength uint16
 }
 
 type tcpPacket struct {
@@ -122,13 +123,8 @@ func tcpAssembler(tcpchannel chan tcpPacket, tcp_return_channel chan tcpData, do
 func packetDecoder(channel_input chan gopacket.Packet, tcp_channel []chan tcpPacket, tcp_return_channel <-chan tcpData, done chan bool, resultChannel chan<- DnsResult) {
 	var SrcIP string
 	var DstIP string
-	var eth layers.Ethernet
-	var ip4 layers.IPv4
-	var ip6 layers.IPv6
-	var udp layers.UDP
 	var dns layers.DNS
 	var payload gopacket.Payload
-	parser := gopacket.NewDecodingLayerParser(layers.LayerTypeEthernet, &eth, &ip4, &ip6, &udp, &dns, &payload)
 	parser_dns_only := gopacket.NewDecodingLayerParser(layers.LayerTypeDNS, &dns, &payload)
 	decodedLayers := []gopacket.LayerType{}
 	tcp_count := uint64(len(tcp_channel))
@@ -139,7 +135,7 @@ func packetDecoder(channel_input chan gopacket.Packet, tcp_channel []chan tcpPac
 				parser_dns_only.DecodeLayers(data.data, &decodedLayers)
 				for _, value := range decodedLayers {
 					if value == layers.LayerTypeDNS {
-						resultChannel <- DnsResult{time.Now(), dns, data.SrcIp, data.DstIp, "tcp"}
+						resultChannel <- DnsResult{time.Now(), dns, data.SrcIp, data.DstIp, "tcp", uint16(len(data.data))}
 					}
 				}
 			}
@@ -160,11 +156,8 @@ func packetDecoder(channel_input chan gopacket.Packet, tcp_channel []chan tcpPac
 
 				switch packet.TransportLayer().LayerType() {
 				case layers.LayerTypeUDP:
-					parser.DecodeLayers(packet.Data(), &decodedLayers)
-					for _, value := range decodedLayers {
-						if value == layers.LayerTypeDNS {
-							resultChannel <- DnsResult{time.Now(), dns, SrcIP, DstIP, "udp"}
-						}
+					if value := packet.Layer(layers.LayerTypeDNS); value != nil {
+						resultChannel <- DnsResult{time.Now(), *value.(*layers.DNS), SrcIP, DstIP, "udp", uint16(len(packet.NetworkLayer().LayerPayload()))}
 					}
 				case layers.LayerTypeTCP:
 					tcp_channel[packet.NetworkLayer().NetworkFlow().FastHash()%tcp_count] <- tcpPacket{
@@ -232,6 +225,8 @@ func start(devName string, resultChannel chan<- DnsResult, packetHandlerCount, t
 
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	packetSource.DecodeOptions.Lazy = true
+	packetSource.NoCopy = true
+	//dropped := 0
 	for {
 		select {
 		case packet := <-packetSource.Packets():
@@ -240,9 +235,14 @@ func start(devName string, resultChannel chan<- DnsResult, packetHandlerCount, t
 				close(exiting)
 				continue
 			}
-			select {
+			processing_channel <- packet
+			/*select {
 			case processing_channel <- packet:
-			}
+				dropped++
+				if dropped%1000 == 0 {
+					log.Println("Dropped ", dropped)
+				}
+			}*/
 		case <-exiting:
 			return
 		}
