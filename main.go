@@ -103,8 +103,9 @@ func output(resultChannel chan DnsResult, exiting chan bool, wg *sync.WaitGroup)
 						for _, dnsQuestion := range item.Dns.Questions {
 							if _, err := stmt.Exec(item.timestamp,
 								item.timestamp,
-								item.Protocol, item.Dns.QR,
-								int(item.Dns.ResponseCode),
+								item.Protocol,
+								item.Dns.QR,
+								int(item.Dns.OpCode),
 								int(item.Dns.ResponseCode),
 								string(dnsQuestion.Name),
 								item.PacketLength); err != nil {
@@ -149,7 +150,7 @@ func main() {
 	if *devName == "" {
 		log.Fatal("-devName is required")
 	}
-	resultChannel := make(chan DnsResult, 10000)
+	resultChannel := make(chan DnsResult, 100000)
 
 	// Setup output routine
 	exiting := make(chan bool)
