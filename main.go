@@ -42,6 +42,7 @@ func connectClickhouse(exiting chan bool) *sql.DB {
 				Protocol FixedString(3),
 				QR UInt8,
 				OpCode UInt8,
+				Type UInt16,
 				ResponceCode UInt8,
 				Question String,
 				Size UInt16
@@ -91,7 +92,7 @@ func output(resultChannel chan DnsResult, exiting chan bool, wg *sync.WaitGroup)
 						connect = connectClickhouse(exiting)
 						continue
 					}
-					stmt, err := tx.Prepare("INSERT INTO DNS_LOG (DnsDate, timestamp, Protocol, QR, OpCode, ResponceCode, Question, Size) VALUES(?,?,?,?,?,?,?,?)")
+					stmt, err := tx.Prepare("INSERT INTO DNS_LOG (DnsDate, timestamp, Protocol, QR, OpCode, Type, ResponceCode, Question, Size) VALUES(?,?,?,?,?,?,?,?)")
 					if err != nil {
 						log.Println(err)
 						connect = connectClickhouse(exiting)
@@ -106,6 +107,7 @@ func output(resultChannel chan DnsResult, exiting chan bool, wg *sync.WaitGroup)
 								item.Protocol,
 								item.Dns.QR,
 								int(item.Dns.OpCode),
+								int(dnsQuestion.Type),
 								int(item.Dns.ResponseCode),
 								string(dnsQuestion.Name),
 								item.PacketLength); err != nil {
