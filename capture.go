@@ -55,33 +55,27 @@ func (ds *dnsStream) processStream() {
 		count, err := ds.reader.Read(tmp)
 
 		if err == io.EOF {
-			// Read until the End Of File, and use it as a signal to send the reassembed stream into the channel
-			// Ensure the length of data is at least two to calculate the dns packet length
-			if len(data) < 2 {
-				return
-			}
-			// Parse the integer
-			dns_data_len := int(binary.BigEndian.Uint16(data[:2]))
-
-			// Check the parsed data is the expected size
-			if len(data) < int(dns_data_len+2) {
-				return
-			}
-
-			// Return the data to be processed
-			ds.tcp_return_channel <- tcpData{
-				data:  data[2 : dns_data_len+2],
-				SrcIp: ds.Net.Src().String(),
-				DstIp: ds.Net.Dst().String(),
-			}
 			return
 		} else if err != nil {
 			fmt.Errorf("Error when reading DNS buf", err)
 		} else if count > 0 {
-			// Append only if the last size was valid
-			length := len(data)
-			if length < 2 || length < int(binary.BigEndian.Uint16(data[:2]))+2 {
-				data = append(data, tmp[0:count]...)
+			data = append(data, tmp[0:count]...)
+			for curLength := len(data); curLength >= 2; curLength = len(data) {
+				expected := int(binary.BigEndian.Uint16(data[:2])) + 2
+				if curLength+count >= expected {
+					result := data[2:expected]
+
+					// Send the data to be processed
+					ds.tcp_return_channel <- tcpData{
+						data:  result,
+						SrcIp: ds.Net.Src().String(),
+						DstIp: ds.Net.Dst().String(),
+					}
+					// Save the remaining data for future querys
+					data = data[expected:]
+				} else {
+					break
+				}
 			}
 		}
 	}
