@@ -174,7 +174,7 @@ func packetDecoder(channel_input chan gopacket.Packet, tcp_channel []chan tcpPac
 
 func initialize(devName string) *pcap.Handle {
 	// Open device
-	handle, err := pcap.OpenLive(devName, 65536, false, 500*time.Millisecond)
+	handle, err := pcap.OpenLive(devName, 65536, true, 10 * time.Millisecond)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -203,13 +203,13 @@ func handleInterrupt(done chan bool) {
 	}()
 }
 
-func start(devName string, resultChannel chan<- DnsResult, packetHandlerCount, tcpHandlerCount uint, exiting chan bool) {
+func start(devName string, resultChannel chan<- DnsResult, packetHandlerCount, packetChannelSize, tcpHandlerCount uint, exiting chan bool) {
 	var tcp_channel []chan tcpPacket
 	handle := initialize(devName)
 	defer handle.Close()
 
 	tcp_return_channel := make(chan tcpData, 500)
-	processing_channel := make(chan gopacket.Packet, 10000)
+	processing_channel := make(chan gopacket.Packet, packetChannelSize)
 
 	// Setup SIGINT handling
 	handleInterrupt(exiting)
@@ -227,22 +227,20 @@ func start(devName string, resultChannel chan<- DnsResult, packetHandlerCount, t
 	packetSource.DecodeOptions.Lazy = true
 	packetSource.NoCopy = true
 	//dropped := 0
+
+	fmt.Println("Waiting for packet")
 	for {
 		select {
 		case packet := <-packetSource.Packets():
 			if packet == nil {
 				fmt.Println("PacketSource returned nil.")
 				close(exiting)
-				continue
+				return
 			}
-			processing_channel <- packet
-			/*select {
-			case processing_channel <- packet:
-				dropped++
-				if dropped%1000 == 0 {
-					log.Println("Dropped ", dropped)
-				}
-			}*/
+			select {
+				case processing_channel <- packet:
+				default:
+			}
 		case <-exiting:
 			return
 		}
