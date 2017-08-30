@@ -45,7 +45,7 @@ func connectClickhouse(exiting chan bool) clickhouse.Clickhouse {
 			CREATE TABLE IF NOT EXISTS DNS_LOG (
 				DnsDate Date,
 				timestamp DateTime,
-				Protocol FixedString(3),
+				Protocol String,
 				QR UInt8,
 				OpCode UInt8,
 				Class UInt16,
