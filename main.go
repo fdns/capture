@@ -26,7 +26,7 @@ var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 var memprofile = flag.String("memprofile", "", "write memory profile to `file`")
 
 func connectClickhouse(exiting chan bool) clickhouse.Clickhouse {
-	tick := time.NewTimer(5 * time.Second)
+	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
 	for {
 		select {
@@ -61,7 +61,7 @@ func connectClickhouse(exiting chan bool) clickhouse.Clickhouse {
 				}
 				connection.Commit()
 			}
-			// View to fetch the top queryed domains
+			// View to fetch the top queried domains
 			{
 				stmt, _ := connection.Prepare(`
 				CREATE MATERIALIZED VIEW IF NOT EXISTS DNS_DOMAIN_COUNT
@@ -89,12 +89,81 @@ func connectClickhouse(exiting chan bool) clickhouse.Clickhouse {
 				}
 				connection.Commit()
 			}
-			// View to fetch the querys by protocol
+			// View to fetch the querys by protocol and packet size
 			{
 				stmt, _ := connection.Prepare(`
 				CREATE MATERIALIZED VIEW IF NOT EXISTS DNS_PROTOCOL
-				ENGINE=SummingMergeTree(DnsDate, (timestamp, Protocol), 8192, c) AS
-				SELECT DnsDate, timestamp, Protocol, count(*) as c FROM DNS_LOG GROUP BY DnsDate, timestamp, Protocol
+				ENGINE=SummingMergeTree(DnsDate, (timestamp, Protocol), 8192, (c, Size)) AS
+				SELECT DnsDate, timestamp, Protocol, count(*) as c, sum(Size) as Size FROM DNS_LOG GROUP BY DnsDate, timestamp, Protocol
+				`)
+
+				if _, err := stmt.Exec([]driver.Value{}); err != nil {
+					log.Println(err)
+					continue
+				}
+				connection.Commit()
+			}
+			// View to fetch the querys by OpCode
+			{
+				stmt, _ := connection.Prepare(`
+				CREATE MATERIALIZED VIEW IF NOT EXISTS DNS_OPCODE
+				ENGINE=SummingMergeTree(DnsDate, (timestamp, OpCode), 8192, c) AS
+				SELECT DnsDate, timestamp, OpCode, count(*) as c FROM DNS_LOG GROUP BY DnsDate, timestamp, OpCode
+				`)
+
+				if _, err := stmt.Exec([]driver.Value{}); err != nil {
+					log.Println(err)
+					continue
+				}
+				connection.Commit()
+			}
+			// View to fetch the querys by Query Type
+			{
+				stmt, _ := connection.Prepare(`
+				CREATE MATERIALIZED VIEW IF NOT EXISTS DNS_TYPE
+				ENGINE=SummingMergeTree(DnsDate, (timestamp, Type), 8192, c) AS
+				SELECT DnsDate, timestamp, Type, count(*) as c FROM DNS_LOG GROUP BY DnsDate, timestamp, Type
+				`)
+
+				if _, err := stmt.Exec([]driver.Value{}); err != nil {
+					log.Println(err)
+					continue
+				}
+				connection.Commit()
+			}
+			// View to fetch the querys by Query Class
+			{
+				stmt, _ := connection.Prepare(`
+				CREATE MATERIALIZED VIEW IF NOT EXISTS DNS_CLASS
+				ENGINE=SummingMergeTree(DnsDate, (timestamp, Class), 8192, c) AS
+				SELECT DnsDate, timestamp, Class, count(*) as c FROM DNS_LOG GROUP BY DnsDate, timestamp, Class
+				`)
+
+				if _, err := stmt.Exec([]driver.Value{}); err != nil {
+					log.Println(err)
+					continue
+				}
+				connection.Commit()
+			}
+			// View to fetch the querys by Responce
+			{
+				stmt, _ := connection.Prepare(`
+				CREATE MATERIALIZED VIEW IF NOT EXISTS DNS_RESPONCECODE
+				ENGINE=SummingMergeTree(DnsDate, (timestamp, ResponceCode), 8192, c) AS
+				SELECT DnsDate, timestamp, ResponceCode, count(*) as c FROM DNS_LOG GROUP BY DnsDate, timestamp, ResponceCode
+				`)
+
+				if _, err := stmt.Exec([]driver.Value{}); err != nil {
+					log.Println(err)
+					continue
+				}
+				connection.Commit()
+			}
+			{
+				stmt, _ := connection.Prepare(`
+				CREATE MATERIALIZED VIEW IF NOT EXISTS DNS_RESPONCECODE
+				ENGINE=SummingMergeTree(DnsDate, (timestamp, ResponceCode), 8192, c) AS
+				SELECT DnsDate, timestamp, ResponceCode, count(*) as c FROM DNS_LOG GROUP BY DnsDate, timestamp, ResponceCode
 				`)
 
 				if _, err := stmt.Exec([]driver.Value{}); err != nil {
@@ -121,12 +190,13 @@ func output(resultChannel chan DnsResult, exiting chan bool, wg *sync.WaitGroup)
 		case data := <-resultChannel:
 			batch = append(batch, data)
 		case <-ticker:
-			log.Println(len(resultChannel))
+
 			if err := SendData(connect, batch, exiting); err != nil {
 				log.Println(err)
 				connect = connectClickhouse(exiting)
+			} else {
+				batch = make([]DnsResult, 0, 200000)
 			}
-			batch = make([]DnsResult, 0, 200000)
 		case <-exiting:
 			return
 		}
@@ -144,7 +214,7 @@ func SendData(connect clickhouse.Clickhouse, batch []DnsResult, exiting chan boo
 	if len(batch) == 0 {
 		return nil
 	}
-	fmt.Println(len(batch))
+	log.Println(len(batch))
 
 	// Return if the connection is null, we are exiting
 	if connect == nil {
@@ -197,18 +267,17 @@ func SendData(connect clickhouse.Clickhouse, batch []DnsResult, exiting chan boo
 					b.WriteString(8, string(dnsQuery.Name))
 					b.WriteString(9, srcIpMask)
 					b.WriteUInt16(10, batch[k].PacketLength)
-					break
 				}
 			}
 			if err := connect.WriteBlock(b); err != nil {
-				log.Fatal(err)
+				return
 			}
 		}()
 	}
 
 	wg.Wait()
 	if err := connect.Commit(); err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	return nil
