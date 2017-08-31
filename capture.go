@@ -174,7 +174,7 @@ func packetDecoder(channel_input chan gopacket.Packet, tcp_channel []chan tcpPac
 
 func initialize(devName string) *pcap.Handle {
 	// Open device
-	handle, err := pcap.OpenLive(devName, 65536, true, 10 * time.Millisecond)
+	handle, err := pcap.OpenLive(devName, 65536, true, 10*time.Millisecond)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -238,8 +238,8 @@ func start(devName string, resultChannel chan<- DnsResult, packetHandlerCount, p
 				return
 			}
 			select {
-				case processing_channel <- packet:
-				default:
+			case processing_channel <- packet:
+			default:
 			}
 		case <-exiting:
 			return

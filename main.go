@@ -5,15 +5,15 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"runtime/pprof"
 	"sync"
 	"time"
-	"runtime/pprof"
 
-	"os"
-	"runtime"
+	"github.com/kshvakov/clickhouse"
 	_ "github.com/kshvakov/clickhouse"
 	data "github.com/kshvakov/clickhouse/lib/data"
-	"github.com/kshvakov/clickhouse"
+	"os"
+	"runtime"
 	"strings"
 )
 
@@ -24,7 +24,6 @@ var packetChannelSize = flag.Uint("packetHandlerChannelSize", 1000000, "Size of 
 var resultChannelSize = flag.Uint("resultChannelSize", 1000000, "Size of the result processor channel size")
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 var memprofile = flag.String("memprofile", "", "write memory profile to `file`")
-
 
 func connectClickhouse(exiting chan bool) clickhouse.Clickhouse {
 	tick := time.NewTimer(5 * time.Second)
@@ -143,7 +142,7 @@ func SendData(connect clickhouse.Clickhouse, batch []DnsResult, exiting chan boo
 	wg.Add(len(blocks))
 	for i := range blocks {
 		b := blocks[i]
-		start := i*(len(batch))/count
+		start := i * (len(batch)) / count
 		end := min((i+1)*(len(batch))/count, len(batch))
 
 		go func() {
@@ -210,7 +209,7 @@ func main() {
 	go output(resultChannel, exiting, &wg)
 
 	go func() {
-		time.Sleep(50*time.Second)
+		time.Sleep(50 * time.Second)
 		if *memprofile != "" {
 			fmt.Println("Writing mem")
 			f, err := os.Create(*memprofile)
@@ -227,7 +226,6 @@ func main() {
 
 	// Start listening
 	start(*devName, resultChannel, *packetHandlerCount, *packetChannelSize, *tcpHandlerCount, exiting)
-
 
 	// Wait for the output to finish
 	fmt.Println("Exiting")
