@@ -19,11 +19,12 @@ import (
 
 var devName = flag.String("devName", "", "Device used to capture")
 var clickhouseAddress = flag.String("clickhouseAddress", "localhost:9000", "Address of the clickhouse database to save the results")
+var batchSize = flag.Uint("batchSize", 100000, "Minimun capacity of the cache array used to send data to clickhouse. Set close to the queries per second received to prevent allocations")
 var packetHandlerCount = flag.Uint("packetHandlers", 1, "Number of routines used to handle received packets")
 var tcpHandlerCount = flag.Uint("tcpHandlers", 1, "Number of routines used to handle tcp assembly")
 var packetChannelSize = flag.Uint("packetHandlerChannelSize", 100000, "Size of the packet handler channel")
 var tcpAssemblyChannelSize = flag.Uint("tcpAssemblyChannelSize", 1000, "Size of the tcp assembler")
-var tcpResultChannelSize = flag.Uint("tcpAssemblyChannelSize", 1000, "Size of the tcp result channel")
+var tcpResultChannelSize = flag.Uint("tcpResultChannelSize", 1000, "Size of the tcp result channel")
 var resultChannelSize = flag.Uint("resultChannelSize", 100000, "Size of the result processor channel size")
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 var memprofile = flag.String("memprofile", "", "write memory profile to `file`")
@@ -180,12 +181,12 @@ func connectClickhouse(exiting chan bool, clickhouseHost string) clickhouse.Clic
 	}
 }
 
-func output(resultChannel chan DnsResult, exiting chan bool, wg *sync.WaitGroup, clickhouseHost string) {
+func output(resultChannel chan DnsResult, exiting chan bool, wg *sync.WaitGroup, clickhouseHost string, batchSize uint) {
 	wg.Add(1)
 	defer wg.Done()
 
 	connect := connectClickhouse(exiting, clickhouseHost)
-	batch := make([]DnsResult, 0, 200000)
+	batch := make([]DnsResult, 0, batchSize)
 
 	ticker := time.Tick(time.Second)
 	for {
@@ -198,7 +199,7 @@ func output(resultChannel chan DnsResult, exiting chan bool, wg *sync.WaitGroup,
 				log.Println(err)
 				connect = connectClickhouse(exiting, clickhouseHost)
 			} else {
-				batch = make([]DnsResult, 0, 200000)
+				batch = make([]DnsResult, 0, batchSize)
 			}
 		case <-exiting:
 			return
@@ -308,7 +309,7 @@ func main() {
 	// Setup output routine
 	exiting := make(chan bool)
 	var wg sync.WaitGroup
-	go output(resultChannel, exiting, &wg, *clickhouseAddress)
+	go output(resultChannel, exiting, &wg, *clickhouseAddress, *batchSize)
 
 	go func() {
 		time.Sleep(120 * time.Second)
