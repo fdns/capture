@@ -148,7 +148,7 @@ func SendData(connect clickhouse.Clickhouse, batch []DnsResult, exiting chan boo
 		return err
 	}
 
-	blocks := []*data.Block{block, block.Copy()}
+	blocks := []*data.Block{block}
 
 	count := len(blocks)
 	var wg sync.WaitGroup
