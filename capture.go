@@ -226,9 +226,7 @@ func start(devName string, resultChannel chan<- DnsResult, packetHandlerCount, p
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	packetSource.DecodeOptions.Lazy = true
 	packetSource.NoCopy = true
-	//dropped := 0
-
-	fmt.Println("Waiting for packet")
+	log.Println("Waiting for packets")
 	for {
 		select {
 		case packet := <-packetSource.Packets():

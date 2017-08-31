@@ -20,8 +20,8 @@ import (
 var devName = flag.String("devName", "", "Device used to capture")
 var packetHandlerCount = flag.Uint("packetHandlers", 1, "Number of routines used to handle received packets")
 var tcpHandlerCount = flag.Uint("tcpHandlers", 1, "Number of routines used to handle tcp assembly")
-var packetChannelSize = flag.Uint("packetHandlerChannelSize", 1000000, "Size of the packet handler channel size")
-var resultChannelSize = flag.Uint("resultChannelSize", 1000000, "Size of the result processor channel size")
+var packetChannelSize = flag.Uint("packetHandlerChannelSize", 100000, "Size of the packet handler channel size")
+var resultChannelSize = flag.Uint("resultChannelSize", 100000, "Size of the result processor channel size")
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 var memprofile = flag.String("memprofile", "", "write memory profile to `file`")
 
@@ -53,7 +53,7 @@ func connectClickhouse(exiting chan bool) clickhouse.Clickhouse {
 				Question String,
 				SourceIPMask String,
 				Size UInt16
-			) engine=MergeTree(DnsDate, (timestamp, Question, Protocol), 8192)
+			) engine=MergeTree(DnsDate, (timestamp, Question), 8192)
 			`)
 				if _, err := stmt.Exec([]driver.Value{}); err != nil {
 					log.Println(err)
@@ -61,6 +61,7 @@ func connectClickhouse(exiting chan bool) clickhouse.Clickhouse {
 				}
 				connection.Commit()
 			}
+			// View to fetch the top queryed domains
 			{
 				stmt, _ := connection.Prepare(`
 				CREATE MATERIALIZED VIEW IF NOT EXISTS DNS_DOMAIN_COUNT
@@ -74,11 +75,26 @@ func connectClickhouse(exiting chan bool) clickhouse.Clickhouse {
 				}
 				connection.Commit()
 			}
+			// View to fetch the unique domain count
 			{
 				stmt, _ := connection.Prepare(`
 				CREATE MATERIALIZED VIEW IF NOT EXISTS DNS_DOMAIN_UNIQUE
 				ENGINE=AggregatingMergeTree(DnsDate, (timestamp), 8192) AS
 				SELECT DnsDate, timestamp, uniqState(Question) AS UniqueDnsCount FROM DNS_LOG GROUP BY DnsDate, timestamp
+				`)
+
+				if _, err := stmt.Exec([]driver.Value{}); err != nil {
+					log.Println(err)
+					continue
+				}
+				connection.Commit()
+			}
+			// View to fetch the querys by protocol
+			{
+				stmt, _ := connection.Prepare(`
+				CREATE MATERIALIZED VIEW IF NOT EXISTS DNS_PROTOCOL
+				ENGINE=SummingMergeTree(DnsDate, (timestamp, Protocol), 8192, c) AS
+				SELECT DnsDate, timestamp, Protocol, count(*) as c FROM DNS_LOG GROUP BY DnsDate, timestamp, Protocol
 				`)
 
 				if _, err := stmt.Exec([]driver.Value{}); err != nil {
@@ -105,6 +121,7 @@ func output(resultChannel chan DnsResult, exiting chan bool, wg *sync.WaitGroup)
 		case data := <-resultChannel:
 			batch = append(batch, data)
 		case <-ticker:
+			log.Println(len(resultChannel))
 			if err := SendData(connect, batch, exiting); err != nil {
 				log.Println(err)
 				connect = connectClickhouse(exiting)
