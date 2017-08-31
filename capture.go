@@ -203,19 +203,19 @@ func handleInterrupt(done chan bool) {
 	}()
 }
 
-func start(devName string, resultChannel chan<- DnsResult, packetHandlerCount, packetChannelSize, tcpHandlerCount uint, exiting chan bool) {
+func start(devName string, resultChannel chan<- DnsResult, packetHandlerCount, packetChannelSize, tcpHandlerCount, tcpAssemblyChannelSize, tcpResultChannelSize uint, exiting chan bool) {
 	var tcp_channel []chan tcpPacket
 	handle := initialize(devName)
 	defer handle.Close()
 
-	tcp_return_channel := make(chan tcpData, 500)
+	tcp_return_channel := make(chan tcpData, tcpResultChannelSize)
 	processing_channel := make(chan gopacket.Packet, packetChannelSize)
 
 	// Setup SIGINT handling
 	handleInterrupt(exiting)
 
 	for i := uint(0); i < tcpHandlerCount; i++ {
-		tcp_channel = append(tcp_channel, make(chan tcpPacket, 500))
+		tcp_channel = append(tcp_channel, make(chan tcpPacket, tcpAssemblyChannelSize))
 		go tcpAssembler(tcp_channel[i], tcp_return_channel, exiting)
 	}
 

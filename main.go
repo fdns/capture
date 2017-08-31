@@ -18,14 +18,17 @@ import (
 )
 
 var devName = flag.String("devName", "", "Device used to capture")
+var clickhouseAddress = flag.String("clickhouseAddress", "localhost:9000", "Address of the clickhouse database to save the results")
 var packetHandlerCount = flag.Uint("packetHandlers", 1, "Number of routines used to handle received packets")
 var tcpHandlerCount = flag.Uint("tcpHandlers", 1, "Number of routines used to handle tcp assembly")
-var packetChannelSize = flag.Uint("packetHandlerChannelSize", 100000, "Size of the packet handler channel size")
+var packetChannelSize = flag.Uint("packetHandlerChannelSize", 100000, "Size of the packet handler channel")
+var tcpAssemblyChannelSize = flag.Uint("tcpAssemblyChannelSize", 1000, "Size of the tcp assembler")
+var tcpResultChannelSize = flag.Uint("tcpAssemblyChannelSize", 1000, "Size of the tcp result channel")
 var resultChannelSize = flag.Uint("resultChannelSize", 100000, "Size of the result processor channel size")
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 var memprofile = flag.String("memprofile", "", "write memory profile to `file`")
 
-func connectClickhouse(exiting chan bool) clickhouse.Clickhouse {
+func connectClickhouse(exiting chan bool, clickhouseHost string) clickhouse.Clickhouse {
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
 	for {
@@ -34,7 +37,7 @@ func connectClickhouse(exiting chan bool) clickhouse.Clickhouse {
 			// When exiting, return inmediatly
 			return nil
 		case <-tick.C:
-			connection, err := clickhouse.OpenDirect("tcp://172.30.65.172:9000?username=&compress=true&debug=false")
+			connection, err := clickhouse.OpenDirect(fmt.Sprintf("tcp://%v?username=&compress=true&debug=false", clickhouseHost))
 			if err != nil {
 				log.Println(err)
 				continue
@@ -177,11 +180,11 @@ func connectClickhouse(exiting chan bool) clickhouse.Clickhouse {
 	}
 }
 
-func output(resultChannel chan DnsResult, exiting chan bool, wg *sync.WaitGroup) {
+func output(resultChannel chan DnsResult, exiting chan bool, wg *sync.WaitGroup, clickhouseHost string) {
 	wg.Add(1)
 	defer wg.Done()
 
-	connect := connectClickhouse(exiting)
+	connect := connectClickhouse(exiting, clickhouseHost)
 	batch := make([]DnsResult, 0, 200000)
 
 	ticker := time.Tick(time.Second)
@@ -193,7 +196,7 @@ func output(resultChannel chan DnsResult, exiting chan bool, wg *sync.WaitGroup)
 
 			if err := SendData(connect, batch, exiting); err != nil {
 				log.Println(err)
-				connect = connectClickhouse(exiting)
+				connect = connectClickhouse(exiting, clickhouseHost)
 			} else {
 				batch = make([]DnsResult, 0, 200000)
 			}
@@ -214,7 +217,7 @@ func SendData(connect clickhouse.Clickhouse, batch []DnsResult, exiting chan boo
 	if len(batch) == 0 {
 		return nil
 	}
-	log.Println(len(batch))
+	log.Println("Sending ", len(batch))
 
 	// Return if the connection is null, we are exiting
 	if connect == nil {
@@ -305,10 +308,10 @@ func main() {
 	// Setup output routine
 	exiting := make(chan bool)
 	var wg sync.WaitGroup
-	go output(resultChannel, exiting, &wg)
+	go output(resultChannel, exiting, &wg, *clickhouseAddress)
 
 	go func() {
-		time.Sleep(50 * time.Second)
+		time.Sleep(120 * time.Second)
 		if *memprofile != "" {
 			fmt.Println("Writing mem")
 			f, err := os.Create(*memprofile)
@@ -324,7 +327,7 @@ func main() {
 	}()
 
 	// Start listening
-	start(*devName, resultChannel, *packetHandlerCount, *packetChannelSize, *tcpHandlerCount, exiting)
+	start(*devName, resultChannel, *packetHandlerCount, *packetChannelSize, *tcpHandlerCount, *tcpAssemblyChannelSize, *tcpResultChannelSize, exiting)
 
 	// Wait for the output to finish
 	fmt.Println("Exiting")
