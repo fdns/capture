@@ -74,6 +74,19 @@ func connectClickhouse(exiting chan bool) clickhouse.Clickhouse {
 				}
 				connection.Commit()
 			}
+			{
+				stmt, _ := connection.Prepare(`
+				CREATE MATERIALIZED VIEW IF NOT EXISTS DNS_DOMAIN_UNIQUE
+				ENGINE=AggregatingMergeTree(DnsDate, (timestamp), 8192) AS
+				SELECT DnsDate, timestamp, uniqState(Question) AS UniqueDnsCount FROM DNS_LOG GROUP BY DnsDate, timestamp
+				`)
+
+				if _, err := stmt.Exec([]driver.Value{}); err != nil {
+					log.Println(err)
+					continue
+				}
+				connection.Commit()
+			}
 			return connection
 		}
 	}
