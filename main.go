@@ -45,7 +45,7 @@ func connectClickhouse(exiting chan bool) clickhouse.Clickhouse {
 			CREATE TABLE IF NOT EXISTS DNS_LOG (
 				DnsDate Date,
 				timestamp DateTime,
-				Protocol String,
+				Protocol FixedString(3),
 				QR UInt8,
 				OpCode UInt8,
 				Class UInt16,
@@ -136,7 +136,7 @@ func SendData(connect clickhouse.Clickhouse, batch []DnsResult, exiting chan boo
 		return err
 	}
 
-	blocks := []*data.Block{block, block.Copy(), block.Copy()}
+	blocks := []*data.Block{block, block.Copy()}
 
 	count := len(blocks)
 	var wg sync.WaitGroup
@@ -149,16 +149,13 @@ func SendData(connect clickhouse.Clickhouse, batch []DnsResult, exiting chan boo
 		go func() {
 			defer wg.Done()
 			b.Reserve()
-			b.NumRows = uint64(end - start)
 			for k := start; k < end; k++ {
-				if len(batch[k].Dns.Questions) == 0 {
-					b.NumRows -= 1
-				}
 				for _, dnsQuery := range batch[k].Dns.Questions {
+					b.NumRows++
 					srcIpMask := strings.Split(batch[k].SrcIP, ".")[0] + ".0.0.0"
 					b.WriteDate(0, batch[k].timestamp)
 					b.WriteDateTime(1, batch[k].timestamp)
-					b.WriteString(2, (batch[k].Protocol))
+					b.WriteFixedString(2, []byte(batch[k].Protocol))
 					QR := uint8(0)
 					if batch[k].Dns.QR {
 						QR = 1
