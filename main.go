@@ -93,12 +93,26 @@ func connectClickhouse(exiting chan bool, clickhouseHost string) clickhouse.Clic
 				}
 				connection.Commit()
 			}
-			// View to fetch the querys by protocol and packet size
+			// View to fetch the querys by protocol
 			{
 				stmt, _ := connection.Prepare(`
 				CREATE MATERIALIZED VIEW IF NOT EXISTS DNS_PROTOCOL
 				ENGINE=SummingMergeTree(DnsDate, (timestamp, Protocol), 8192, (c, Size)) AS
-				SELECT DnsDate, timestamp, Protocol, count(*) as c, sum(Size) as Size FROM DNS_LOG GROUP BY DnsDate, timestamp, Protocol
+				SELECT DnsDate, timestamp, Protocol, count(*) as c FROM DNS_LOG GROUP BY DnsDate, timestamp, Protocol
+				`)
+
+				if _, err := stmt.Exec([]driver.Value{}); err != nil {
+					log.Println(err)
+					continue
+				}
+				connection.Commit()
+			}
+			// View to aggregate packet size
+			{
+				stmt, _ := connection.Prepare(`
+				CREATE MATERIALIZED VIEW IF NOT EXISTS DNS_PACKET_SIZE
+				ENGINE=AggregatingMergeTree(DnsDate, (timestamp), 8192) AS
+				SELECT DnsDate, timestamp, sumState(Size) AS TotalSize, avgState(Size) AS AverageSize FROM DNS_LOG GROUP BY DnsDate, timestamp
 				`)
 
 				if _, err := stmt.Exec([]driver.Value{}); err != nil {
