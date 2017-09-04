@@ -14,38 +14,43 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"net"
 )
 
 type DnsHandler func(dns layers.DNS, SrcIP string, DstIP string, protocol string)
 type DnsResult struct {
 	timestamp    time.Time
 	Dns          layers.DNS
-	SrcIP        string
-	DstIP        string
+	IPVersion    uint8
+	SrcIP        net.IP
+	DstIP        net.IP
 	Protocol     string
 	PacketLength uint16
 }
 
 type tcpPacket struct {
+	IPVersion uint8
 	packet    gopacket.Packet
 	Timestamp time.Time
 }
 
 type tcpData struct {
+	IPVersion uint8
 	data   []byte
-	packet gopacket.Packet
-	SrcIp  string
-	DstIp  string
+	SrcIp  net.IP
+	DstIp  net.IP
 }
 
 type dnsStreamFactory struct {
 	tcp_return_channel chan tcpData
+	IPVersion uint8
 }
 
 type dnsStream struct {
-	Net, transport     gopacket.Flow
+	Net                gopacket.Flow
 	reader             tcpreader.ReaderStream
 	tcp_return_channel chan tcpData
+	IPVersion uint8
 }
 
 func (ds *dnsStream) processStream() {
@@ -68,9 +73,10 @@ func (ds *dnsStream) processStream() {
 
 					// Send the data to be processed
 					ds.tcp_return_channel <- tcpData{
+						IPVersion: ds.IPVersion,
 						data:  result,
-						SrcIp: ds.Net.Src().String(),
-						DstIp: ds.Net.Dst().String(),
+						SrcIp: net.IP(ds.Net.Src().Raw()),
+						DstIp: net.IP(ds.Net.Src().Raw()),
 					}
 					// Save the remaining data for future querys
 					data = data[expected:]
@@ -85,9 +91,9 @@ func (ds *dnsStream) processStream() {
 func (stream *dnsStreamFactory) New(net, transport gopacket.Flow) tcpassembly.Stream {
 	dstream := &dnsStream{
 		Net:                net,
-		transport:          transport,
 		reader:             tcpreader.NewReaderStream(),
 		tcp_return_channel: stream.tcp_return_channel,
+		IPVersion: stream.IPVersion,
 	}
 
 	// We must read all the data from the reader or we will have the data standing in memory
@@ -98,31 +104,47 @@ func (stream *dnsStreamFactory) New(net, transport gopacket.Flow) tcpassembly.St
 
 func tcpAssembler(tcpchannel chan tcpPacket, tcp_return_channel chan tcpData, done chan bool) {
 	//TCP reassembly init
-	streamFactory := &dnsStreamFactory{
+	streamFactoryV4 := &dnsStreamFactory{
 		tcp_return_channel: tcp_return_channel,
+		IPVersion: 6,
 	}
-	streamPool := tcpassembly.NewStreamPool(streamFactory)
-	assembler := tcpassembly.NewAssembler(streamPool)
+	streamPoolV4 := tcpassembly.NewStreamPool(streamFactoryV4)
+	assemblerV4 := tcpassembly.NewAssembler(streamPoolV4)
+
+	streamFactoryV6 := &dnsStreamFactory{
+		tcp_return_channel: tcp_return_channel,
+		IPVersion: 6,
+	}
+	streamPoolV6 := tcpassembly.NewStreamPool(streamFactoryV6)
+	assemblerV6 := tcpassembly.NewAssembler(streamPoolV6)
 	ticker := time.Tick(time.Minute)
 	for {
 		select {
 		case packet := <-tcpchannel:
 			{
 				tcp := packet.packet.TransportLayer().(*layers.TCP)
-				assembler.AssembleWithTimestamp(packet.packet.NetworkLayer().NetworkFlow(), tcp, packet.Timestamp)
+				switch packet.IPVersion {
+				case 4:
+					assemblerV4.AssembleWithTimestamp(packet.packet.NetworkLayer().NetworkFlow(), tcp, packet.Timestamp)
+					break
+				case 6:
+					assemblerV6.AssembleWithTimestamp(packet.packet.NetworkLayer().NetworkFlow(), tcp, packet.Timestamp)
+					break
+				}
 			}
 		case <-ticker:
 			{
 				// Every minute, flush connections that haven't seen activity in the past 2 minutes.
-				assembler.FlushOlderThan(time.Now().Add(time.Minute * -2))
+				assemblerV4.FlushOlderThan(time.Now().Add(time.Minute * -2))
 			}
 		}
 	}
 }
 
 func packetDecoder(channel_input chan gopacket.Packet, tcp_channel []chan tcpPacket, tcp_return_channel <-chan tcpData, done chan bool, resultChannel chan<- DnsResult) {
-	var SrcIP string
-	var DstIP string
+	var SrcIP net.IP
+	var DstIP net.IP
+	var IPVersion uint8
 	var dns layers.DNS
 	var payload gopacket.Payload
 	parser_dns_only := gopacket.NewDecodingLayerParser(layers.LayerTypeDNS, &dns, &payload)
@@ -135,7 +157,7 @@ func packetDecoder(channel_input chan gopacket.Packet, tcp_channel []chan tcpPac
 				parser_dns_only.DecodeLayers(data.data, &decodedLayers)
 				for _, value := range decodedLayers {
 					if value == layers.LayerTypeDNS {
-						resultChannel <- DnsResult{time.Now(), dns, data.SrcIp, data.DstIp, "tcp", uint16(len(data.data))}
+						resultChannel <- DnsResult{time.Now(), dns, data.IPVersion, data.SrcIp, data.DstIp, "tcp", uint16(len(data.data))}
 					}
 				}
 			}
@@ -144,12 +166,14 @@ func packetDecoder(channel_input chan gopacket.Packet, tcp_channel []chan tcpPac
 				switch packet.NetworkLayer().LayerType() {
 				case layers.LayerTypeIPv4:
 					ip4 := packet.NetworkLayer().(*layers.IPv4)
-					SrcIP = ip4.SrcIP.String()
-					DstIP = ip4.DstIP.String()
+					SrcIP = ip4.SrcIP
+					DstIP = ip4.DstIP
+					IPVersion = 4
 				case layers.LayerTypeIPv6:
 					ip6 := packet.NetworkLayer().(*layers.IPv6)
-					SrcIP = ip6.SrcIP.String()
-					DstIP = ip6.DstIP.String()
+					SrcIP = ip6.SrcIP
+					DstIP = ip6.DstIP
+					IPVersion = 6
 				default:
 					break
 				}
@@ -157,10 +181,11 @@ func packetDecoder(channel_input chan gopacket.Packet, tcp_channel []chan tcpPac
 				switch packet.TransportLayer().LayerType() {
 				case layers.LayerTypeUDP:
 					if value := packet.Layer(layers.LayerTypeDNS); value != nil {
-						resultChannel <- DnsResult{time.Now(), *value.(*layers.DNS), SrcIP, DstIP, "udp", uint16(len(packet.NetworkLayer().LayerPayload()))}
+						resultChannel <- DnsResult{time.Now(), *value.(*layers.DNS), IPVersion, SrcIP, DstIP, "udp", uint16(len(packet.NetworkLayer().LayerPayload()))}
 					}
 				case layers.LayerTypeTCP:
 					tcp_channel[packet.NetworkLayer().NetworkFlow().FastHash()%tcp_count] <- tcpPacket{
+						IPVersion,
 						packet,
 						time.Now(),
 					}
