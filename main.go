@@ -281,7 +281,7 @@ func SendData(connect clickhouse.Clickhouse, batch []DnsResult) error {
 			defer wg.Done()
 			b.Reserve()
 			for k := start; k < end; k++ {
-				for _, dnsQuery := range batch[k].Dns.Questions {
+				for _, dnsQuery := range batch[k].Dns.Question {
 					b.NumRows++
 					b.WriteDate(0, batch[k].timestamp)
 					b.WriteDateTime(1, batch[k].timestamp)
@@ -294,14 +294,14 @@ func SendData(connect clickhouse.Clickhouse, batch []DnsResult) error {
 					b.WriteUInt32(3, binary.BigEndian.Uint32(ip[:4]))
 					b.WriteFixedString(4, []byte(batch[k].Protocol))
 					QR := uint8(0)
-					if batch[k].Dns.QR {
+					if batch[k].Dns.Response {
 						QR = 1
 					}
 					b.WriteUInt8(5, QR)
-					b.WriteUInt8(6, uint8(batch[k].Dns.OpCode))
-					b.WriteUInt16(7, uint16(dnsQuery.Class))
-					b.WriteUInt16(8, uint16(dnsQuery.Type))
-					b.WriteUInt8(9, uint8(batch[k].Dns.ResponseCode))
+					b.WriteUInt8(6, uint8(batch[k].Dns.Opcode))
+					b.WriteUInt16(7, uint16(dnsQuery.Qclass))
+					b.WriteUInt16(8, uint16(dnsQuery.Qtype))
+					b.WriteUInt8(9, uint8(batch[k].Dns.Rcode))
 					b.WriteString(10, string(dnsQuery.Name))
 					b.WriteUInt16(11, batch[k].PacketLength)
 				}

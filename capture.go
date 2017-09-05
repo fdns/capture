@@ -11,6 +11,7 @@ import (
 	"github.com/google/gopacket/pcap"
 	"github.com/google/gopacket/tcpassembly"
 	"github.com/google/gopacket/tcpassembly/tcpreader"
+	mkdns "github.com/miekg/dns"
 	"io"
 	"os"
 	"os/signal"
@@ -20,7 +21,7 @@ import (
 type DnsHandler func(dns layers.DNS, SrcIP string, DstIP string, protocol string)
 type DnsResult struct {
 	timestamp    time.Time
-	Dns          layers.DNS
+	Dns          mkdns.Msg
 	IPVersion    uint8
 	SrcIP        net.IP
 	DstIP        net.IP
@@ -145,22 +146,14 @@ func packetDecoder(channel_input chan gopacket.Packet, tcp_channel []chan tcpPac
 	var SrcIP net.IP
 	var DstIP net.IP
 	var IPVersion uint8
-	var dns layers.DNS
-	var payload gopacket.Payload
-	parser_dns_only := gopacket.NewDecodingLayerParser(layers.LayerTypeDNS, &dns, &payload)
-	decodedLayers := []gopacket.LayerType{}
 	tcp_count := uint64(len(tcp_channel))
 	for {
 		select {
 		case data := <-tcp_return_channel:
-			{
-				parser_dns_only.DecodeLayers(data.data, &decodedLayers)
-				for _, value := range decodedLayers {
-					if value == layers.LayerTypeDNS {
-						resultChannel <- DnsResult{time.Now(), dns, data.IPVersion, data.SrcIp, data.DstIp, "tcp", uint16(len(data.data))}
-					}
+				msg := mkdns.Msg{}
+				if err := msg.Unpack(data.data); err == nil {
+					resultChannel <- DnsResult{time.Now(), msg, data.IPVersion, data.SrcIp, data.DstIp, "tcp", uint16(len(data.data))}
 				}
-			}
 		case packet := <-channel_input:
 			{
 				switch packet.NetworkLayer().LayerType() {
@@ -180,8 +173,9 @@ func packetDecoder(channel_input chan gopacket.Packet, tcp_channel []chan tcpPac
 
 				switch packet.TransportLayer().LayerType() {
 				case layers.LayerTypeUDP:
-					if value := packet.Layer(layers.LayerTypeDNS); value != nil {
-						resultChannel <- DnsResult{time.Now(), *value.(*layers.DNS), IPVersion, SrcIP, DstIP, "udp", uint16(len(packet.NetworkLayer().LayerPayload()))}
+					msg := mkdns.Msg{}
+					if err := msg.Unpack(packet.TransportLayer().LayerPayload()); err == nil {
+						resultChannel <- DnsResult{time.Now(), msg, IPVersion, SrcIP, DstIP, "udp", uint16(len(packet.NetworkLayer().LayerPayload()))}
 					}
 				case layers.LayerTypeTCP:
 					tcp_channel[packet.NetworkLayer().NetworkFlow().FastHash()%tcp_count] <- tcpPacket{
