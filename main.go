@@ -14,10 +14,12 @@ import (
 	data "github.com/kshvakov/clickhouse/lib/data"
 	"os"
 	"runtime"
+	"encoding/binary"
 	"net"
 )
 
 var devName = flag.String("devName", "", "Device used to capture")
+var filter = flag.String("filter", "(tcp or udp) and port 53", "BPF filter applied to the packet stream")
 var clickhouseAddress = flag.String("clickhouseAddress", "localhost:9000", "Address of the clickhouse database to save the results")
 var batchSize = flag.Uint("batchSize", 100000, "Minimun capacity of the cache array used to send data to clickhouse. Set close to the queries per second received to prevent allocations")
 var packetHandlerCount = flag.Uint("packetHandlers", 1, "Number of routines used to handle received packets")
@@ -62,7 +64,7 @@ func connectClickhouse(exiting chan bool, clickhouseHost string) (clickhouse.Cli
 		DnsDate Date,
 		timestamp DateTime,
 		IPVersion UInt8,
-		IPPrefix UInt16,
+		IPPrefix UInt32,
 		Protocol FixedString(3),
 		QR UInt8,
 		OpCode UInt8,
@@ -70,9 +72,8 @@ func connectClickhouse(exiting chan bool, clickhouseHost string) (clickhouse.Cli
 		Type UInt16,
 		ResponceCode UInt8,
 		Question String,
-		SourceIPMask String,
 		Size UInt16
-	) engine=MergeTree(DnsDate, (timestamp, Question), 8192)
+	) engine=MergeTree(DnsDate, (timestamp, IPVersion), 8192)
 	`)
 		if _, err := stmt.Exec([]driver.Value{}); err != nil {
 			log.Println(err)
@@ -221,7 +222,7 @@ func output(resultChannel chan DnsResult, exiting chan bool, wg *sync.WaitGroup,
 		case data := <-resultChannel:
 			batch = append(batch, data)
 		case <-ticker:
-			if err := SendData(connect, batch, exiting); err != nil {
+			if err := SendData(connect, batch); err != nil {
 				log.Println(err)
 				connect = connectClickhouseRetry(exiting, clickhouseHost)
 			} else {
@@ -240,22 +241,23 @@ func min(a, b int) int {
 	return b
 }
 
-func SendData(connect clickhouse.Clickhouse, batch []DnsResult, exiting chan bool) error {
+func SendData(connect clickhouse.Clickhouse, batch []DnsResult) error {
 	if len(batch) == 0 {
 		return nil
 	}
-	log.Println("Sending ", len(batch))
 
 	// Return if the connection is null, we are exiting
 	if connect == nil {
 		return nil
 	}
+	log.Println("Sending ", len(batch))
+
 	_, err := connect.Begin()
 	if err != nil {
 		return err
 	}
 
-	_, err = connect.Prepare("INSERT INTO DNS_LOG (DnsDate, timestamp, IPVersion, Protocol, QR, OpCode, Class, Type, ResponceCode, Question, SourceIPMask, Size) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
+	_, err = connect.Prepare("INSERT INTO DNS_LOG (DnsDate, timestamp, IPVersion, IPPrefix, Protocol, QR, OpCode, Class, Type, ResponceCode, Question, Size) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
 	if err != nil {
 		return err
 	}
@@ -281,37 +283,26 @@ func SendData(connect clickhouse.Clickhouse, batch []DnsResult, exiting chan boo
 			for k := start; k < end; k++ {
 				for _, dnsQuery := range batch[k].Dns.Questions {
 					b.NumRows++
-					srcIpMask := "0.0.0.0"
 					b.WriteDate(0, batch[k].timestamp)
 					b.WriteDateTime(1, batch[k].timestamp)
 					b.WriteUInt8(2, batch[k].IPVersion)
-					switch batch[k].IPVersion {
-					case 4: // Save first 8 bytes
-						result := batch[k].SrcIP.Mask(net.IPv4Mask(0xff, 0, 0, 0))
-						_ = result
-						break
-					case 6:
-						mask := make(net.IPMask, net.IPv6len)
-						mask[0] = 0xff
-						mask[1] = 0xff
-						mask[2] = 0xff
-						mask[3] = 0xff
-						result := batch[k].SrcIP.Mask(mask)
-						_ = result
-						break
+
+					ip := batch[k].DstIP
+					if batch[k].IPVersion == 4 {
+						ip = ip.Mask(net.IPv4Mask(0xff, 0, 0, 0))
 					}
-					b.WriteFixedString(3, []byte(batch[k].Protocol))
+					b.WriteUInt32(3, binary.BigEndian.Uint32(ip[:4]))
+					b.WriteFixedString(4, []byte(batch[k].Protocol))
 					QR := uint8(0)
 					if batch[k].Dns.QR {
 						QR = 1
 					}
-					b.WriteUInt8(4, QR)
-					b.WriteUInt8(5, uint8(batch[k].Dns.OpCode))
-					b.WriteUInt16(6, uint16(dnsQuery.Class))
-					b.WriteUInt16(7, uint16(dnsQuery.Type))
-					b.WriteUInt8(8, uint8(batch[k].Dns.ResponseCode))
-					b.WriteString(9, string(dnsQuery.Name))
-					b.WriteString(10, srcIpMask)
+					b.WriteUInt8(5, QR)
+					b.WriteUInt8(6, uint8(batch[k].Dns.OpCode))
+					b.WriteUInt16(7, uint16(dnsQuery.Class))
+					b.WriteUInt16(8, uint16(dnsQuery.Type))
+					b.WriteUInt8(9, uint8(batch[k].Dns.ResponseCode))
+					b.WriteString(10, string(dnsQuery.Name))
 					b.WriteUInt16(11, batch[k].PacketLength)
 				}
 			}
@@ -370,7 +361,7 @@ func main() {
 	}()
 
 	// Start listening
-	start(*devName, resultChannel, *packetHandlerCount, *packetChannelSize, *tcpHandlerCount, *tcpAssemblyChannelSize, *tcpResultChannelSize, exiting)
+	start(*devName, *filter, resultChannel, *packetHandlerCount, *packetChannelSize, *tcpHandlerCount, *tcpAssemblyChannelSize, *tcpResultChannelSize, exiting)
 
 	// Wait for the output to finish
 	fmt.Println("Exiting")

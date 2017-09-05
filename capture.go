@@ -76,7 +76,7 @@ func (ds *dnsStream) processStream() {
 						IPVersion: ds.IPVersion,
 						data:  result,
 						SrcIp: net.IP(ds.Net.Src().Raw()),
-						DstIp: net.IP(ds.Net.Src().Raw()),
+						DstIp: net.IP(ds.Net.Dst().Raw()),
 					}
 					// Save the remaining data for future querys
 					data = data[expected:]
@@ -197,7 +197,7 @@ func packetDecoder(channel_input chan gopacket.Packet, tcp_channel []chan tcpPac
 	}
 }
 
-func initialize(devName string) *pcap.Handle {
+func initialize(devName, filter string) *pcap.Handle {
 	// Open device
 	handle, err := pcap.OpenLive(devName, 65536, true, 10*time.Millisecond)
 	if err != nil {
@@ -205,7 +205,6 @@ func initialize(devName string) *pcap.Handle {
 	}
 
 	// Set filter
-	var filter string = "port 53"
 	fmt.Fprintf(os.Stderr, "Using Device: %s\n", devName)
 	fmt.Fprintf(os.Stderr, "Filter: %s\n", filter)
 	err = handle.SetBPFFilter(filter)
@@ -228,9 +227,9 @@ func handleInterrupt(done chan bool) {
 	}()
 }
 
-func start(devName string, resultChannel chan<- DnsResult, packetHandlerCount, packetChannelSize, tcpHandlerCount, tcpAssemblyChannelSize, tcpResultChannelSize uint, exiting chan bool) {
+func start(devName, filter string, resultChannel chan<- DnsResult, packetHandlerCount, packetChannelSize, tcpHandlerCount, tcpAssemblyChannelSize, tcpResultChannelSize uint, exiting chan bool) {
 	var tcp_channel []chan tcpPacket
-	handle := initialize(devName)
+	handle := initialize(devName, filter)
 	defer handle.Close()
 
 	tcp_return_channel := make(chan tcpData, tcpResultChannelSize)
