@@ -9,13 +9,13 @@ import (
 	"sync"
 	"time"
 
+	"encoding/binary"
 	"github.com/kshvakov/clickhouse"
 	_ "github.com/kshvakov/clickhouse"
 	data "github.com/kshvakov/clickhouse/lib/data"
+	"net"
 	"os"
 	"runtime"
-	"encoding/binary"
-	"net"
 )
 
 var devName = flag.String("devName", "", "Device used to capture")
@@ -28,9 +28,10 @@ var packetChannelSize = flag.Uint("packetHandlerChannelSize", 100000, "Size of t
 var tcpAssemblyChannelSize = flag.Uint("tcpAssemblyChannelSize", 1000, "Size of the tcp assembler")
 var tcpResultChannelSize = flag.Uint("tcpResultChannelSize", 1000, "Size of the tcp result channel")
 var resultChannelSize = flag.Uint("resultChannelSize", 100000, "Size of the result processor channel size")
+var defraggerChannelSize = flag.Uint("defraggerChannelSize", 500, "Size of the channel to send ipv4 packets to be defragged")
+var defraggerChannelReturnSize = flag.Uint("defraggerChannelReturnSize", 500, "Size of the channel where the defragged ipv4 packet are returned")
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 var memprofile = flag.String("memprofile", "", "write memory profile to `file`")
-
 
 func connectClickhouseRetry(exiting chan bool, clickhouseHost string) clickhouse.Clickhouse {
 	tick := time.NewTicker(5 * time.Second)
@@ -373,7 +374,20 @@ func main() {
 	}()
 
 	// Start listening
-	start(*devName, *filter, resultChannel, *packetHandlerCount, *packetChannelSize, *tcpHandlerCount, *tcpAssemblyChannelSize, *tcpResultChannelSize, exiting)
+	capturer := NewDnsCapturer(CaptureOptions{
+		*devName,
+		*filter,
+		resultChannel,
+		*packetHandlerCount,
+		*packetChannelSize,
+		*tcpHandlerCount,
+		*tcpAssemblyChannelSize,
+		*tcpResultChannelSize,
+		*defraggerChannelSize,
+		*defraggerChannelReturnSize,
+		exiting,
+	})
+	capturer.Start()
 
 	// Wait for the output to finish
 	fmt.Println("Exiting")

@@ -2,39 +2,40 @@ package main
 
 import (
 	"encoding/binary"
+	"fmt"
 	"github.com/google/gopacket"
-	"time"
-	"net"
+	"github.com/google/gopacket/layers"
+	"github.com/google/gopacket/tcpassembly"
 	"github.com/google/gopacket/tcpassembly/tcpreader"
 	"io"
-	"fmt"
-	"github.com/google/gopacket/tcpassembly"
-	"github.com/google/gopacket/layers"
+	"net"
+	"time"
 )
 
 type tcpPacket struct {
 	IPVersion uint8
-	packet    gopacket.Packet
+	tcp       layers.TCP
 	Timestamp time.Time
+	flow      gopacket.Flow
 }
 
 type tcpData struct {
 	IPVersion uint8
-	data   []byte
-	SrcIp  net.IP
-	DstIp  net.IP
+	data      []byte
+	SrcIp     net.IP
+	DstIp     net.IP
 }
 
 type dnsStreamFactory struct {
 	tcp_return_channel chan tcpData
-	IPVersion uint8
+	IPVersion          uint8
 }
 
 type dnsStream struct {
 	Net                gopacket.Flow
 	reader             tcpreader.ReaderStream
 	tcp_return_channel chan tcpData
-	IPVersion uint8
+	IPVersion          uint8
 }
 
 func (ds *dnsStream) processStream() {
@@ -58,9 +59,9 @@ func (ds *dnsStream) processStream() {
 					// Send the data to be processed
 					ds.tcp_return_channel <- tcpData{
 						IPVersion: ds.IPVersion,
-						data:  result,
-						SrcIp: net.IP(ds.Net.Src().Raw()),
-						DstIp: net.IP(ds.Net.Dst().Raw()),
+						data:      result,
+						SrcIp:     net.IP(ds.Net.Src().Raw()),
+						DstIp:     net.IP(ds.Net.Dst().Raw()),
 					}
 					// Save the remaining data for future querys
 					data = data[expected:]
@@ -77,7 +78,7 @@ func (stream *dnsStreamFactory) New(net, transport gopacket.Flow) tcpassembly.St
 		Net:                net,
 		reader:             tcpreader.NewReaderStream(),
 		tcp_return_channel: stream.tcp_return_channel,
-		IPVersion: stream.IPVersion,
+		IPVersion:          stream.IPVersion,
 	}
 
 	// We must read all the data from the reader or we will have the data standing in memory
@@ -90,14 +91,14 @@ func tcpAssembler(tcpchannel chan tcpPacket, tcp_return_channel chan tcpData, do
 	//TCP reassembly init
 	streamFactoryV4 := &dnsStreamFactory{
 		tcp_return_channel: tcp_return_channel,
-		IPVersion: 6,
+		IPVersion:          6,
 	}
 	streamPoolV4 := tcpassembly.NewStreamPool(streamFactoryV4)
 	assemblerV4 := tcpassembly.NewAssembler(streamPoolV4)
 
 	streamFactoryV6 := &dnsStreamFactory{
 		tcp_return_channel: tcp_return_channel,
-		IPVersion: 6,
+		IPVersion:          6,
 	}
 	streamPoolV6 := tcpassembly.NewStreamPool(streamFactoryV6)
 	assemblerV6 := tcpassembly.NewAssembler(streamPoolV6)
@@ -106,13 +107,12 @@ func tcpAssembler(tcpchannel chan tcpPacket, tcp_return_channel chan tcpData, do
 		select {
 		case packet := <-tcpchannel:
 			{
-				tcp := packet.packet.TransportLayer().(*layers.TCP)
 				switch packet.IPVersion {
 				case 4:
-					assemblerV4.AssembleWithTimestamp(packet.packet.NetworkLayer().NetworkFlow(), tcp, packet.Timestamp)
+					assemblerV4.AssembleWithTimestamp(packet.flow, &packet.tcp, packet.Timestamp)
 					break
 				case 6:
-					assemblerV6.AssembleWithTimestamp(packet.packet.NetworkLayer().NetworkFlow(), tcp, packet.Timestamp)
+					assemblerV6.AssembleWithTimestamp(packet.flow, &packet.tcp, packet.Timestamp)
 					break
 				}
 			}
