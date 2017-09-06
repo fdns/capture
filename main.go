@@ -19,7 +19,7 @@ import (
 )
 
 var devName = flag.String("devName", "", "Device used to capture")
-var filter = flag.String("filter", "(tcp or udp) and port 53", "BPF filter applied to the packet stream")
+var filter = flag.String("filter", "(ip or ip6)", "BPF filter applied to the packet stream")
 var clickhouseAddress = flag.String("clickhouseAddress", "localhost:9000", "Address of the clickhouse database to save the results")
 var batchSize = flag.Uint("batchSize", 100000, "Minimun capacity of the cache array used to send data to clickhouse. Set close to the queries per second received to prevent allocations")
 var packetHandlerCount = flag.Uint("packetHandlers", 1, "Number of routines used to handle received packets")
@@ -70,6 +70,8 @@ func connectClickhouse(exiting chan bool, clickhouseHost string) (clickhouse.Cli
 		OpCode UInt8,
 		Class UInt16,
 		Type UInt16,
+		Edns0Present UInt8,
+		DoBit UInt8,
 		ResponceCode UInt8,
 		Question String,
 		Size UInt16
@@ -257,7 +259,7 @@ func SendData(connect clickhouse.Clickhouse, batch []DnsResult) error {
 		return err
 	}
 
-	_, err = connect.Prepare("INSERT INTO DNS_LOG (DnsDate, timestamp, IPVersion, IPPrefix, Protocol, QR, OpCode, Class, Type, ResponceCode, Question, Size) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
+	_, err = connect.Prepare("INSERT INTO DNS_LOG (DnsDate, timestamp, IPVersion, IPPrefix, Protocol, QR, OpCode, Class, Type, ResponceCode, Question, Size, Edns0Present, DoBit) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
 	if err != nil {
 		return err
 	}
@@ -297,6 +299,7 @@ func SendData(connect clickhouse.Clickhouse, batch []DnsResult) error {
 					if batch[k].Dns.Response {
 						QR = 1
 					}
+
 					b.WriteUInt8(5, QR)
 					b.WriteUInt8(6, uint8(batch[k].Dns.Opcode))
 					b.WriteUInt16(7, uint16(dnsQuery.Qclass))
@@ -304,6 +307,15 @@ func SendData(connect clickhouse.Clickhouse, batch []DnsResult) error {
 					b.WriteUInt8(9, uint8(batch[k].Dns.Rcode))
 					b.WriteString(10, string(dnsQuery.Name))
 					b.WriteUInt16(11, batch[k].PacketLength)
+					edns, doBit := uint8(0), uint8(0)
+					if edns0 := batch[k].Dns.IsEdns0(); edns0 != nil {
+						edns = 1
+						if edns0.Do() {
+							doBit = 1
+						}
+					}
+					b.WriteUInt8(12, edns)
+					b.WriteUInt8(13, doBit)
 				}
 			}
 			if err := connect.WriteBlock(b); err != nil {
