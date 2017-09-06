@@ -11,6 +11,7 @@ import (
 )
 
 type PacketEncoder struct {
+	port              uint16
 	input             <-chan gopacket.Packet
 	ip4Defrgger       chan<- layers.IPv4
 	ip4DefrggerReturn <-chan layers.IPv4
@@ -43,14 +44,14 @@ func (encoder *PacketEncoder) processTransport(foundLayerTypes *[]gopacket.Layer
 	for _, layerType := range *foundLayerTypes {
 		switch layerType {
 		case layers.LayerTypeUDP:
-			if udp.DstPort == 53 || udp.SrcPort == 53 {
+			if uint16(udp.DstPort) == encoder.port || uint16(udp.SrcPort) == encoder.port {
 				msg := mkdns.Msg{}
 				if err := msg.Unpack(udp.Payload); err == nil {
 					encoder.resultChannel <- DnsResult{time.Now(), msg, IPVersion, SrcIP, DstIP, "udp", uint16(len(udp.Payload))}
 				}
 			}
 		case layers.LayerTypeTCP:
-			if tcp.SrcPort == 53 || tcp.DstPort == 53 {
+			if uint16(tcp.SrcPort) == encoder.port || uint16(tcp.DstPort) == encoder.port {
 				encoder.tcpAssembly[flow.FastHash()%uint64(len(encoder.tcpAssembly))] <- tcpPacket{
 					IPVersion,
 					*tcp,

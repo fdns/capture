@@ -17,6 +17,7 @@ import (
 type CaptureOptions struct {
 	devName                       string
 	filter                        string
+	port                          uint16
 	resultChannel                 chan<- DnsResult
 	packetHandlerCount            uint
 	packetChannelSize             uint
@@ -98,6 +99,7 @@ func (capturer *DnsCapturer) Start() {
 	go ipv4Defragger(ip4DefraggerChannel, ip4DefraggerReturn, options.exiting)
 
 	encoder := PacketEncoder{
+		options.port,
 		processing_channel,
 		ip4DefraggerChannel,
 		ip4DefraggerReturn,

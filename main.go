@@ -19,7 +19,8 @@ import (
 )
 
 var devName = flag.String("devName", "", "Device used to capture")
-var filter = flag.String("filter", "(ip or ip6)", "BPF filter applied to the packet stream")
+var filter = flag.String("filter", "(ip or ip6)", "BPF filter applied to the packet stream. If port is selected, the packets will not be defragged.")
+var port = flag.Uint("port", 53, "Port selected to filter packets")
 var clickhouseAddress = flag.String("clickhouseAddress", "localhost:9000", "Address of the clickhouse database to save the results")
 var batchSize = flag.Uint("batchSize", 100000, "Minimun capacity of the cache array used to send data to clickhouse. Set close to the queries per second received to prevent allocations")
 var packetHandlerCount = flag.Uint("packetHandlers", 1, "Number of routines used to handle received packets")
@@ -346,6 +347,10 @@ func main() {
 		defer pprof.StopCPUProfile()
 	}
 
+	if *port > 65535 {
+		log.Fatal("-port must be between 1 and 65535")
+	}
+
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	if *devName == "" {
 		log.Fatal("-devName is required")
@@ -377,6 +382,7 @@ func main() {
 	capturer := NewDnsCapturer(CaptureOptions{
 		*devName,
 		*filter,
+		uint16(*port),
 		resultChannel,
 		*packetHandlerCount,
 		*packetChannelSize,
